@@ -1,0 +1,14 @@
+[project]
+name = "line-bot-simple"
+version = "0.1.0"
+description = "A simple LINE echo bot"
+requires-python = ">=3.8"
+dependencies = [
+    "line-bot-sdk>=3.0.0",
+    "flask>=3.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
