@@ -17,6 +17,9 @@ from openai import OpenAI
 from notion_client import Client
 from google_drive_service import get_google_drive_service, create_folder_if_not_exists, upload_image_to_drive
 import base64
+import re
+import requests
+from bs4 import BeautifulSoup
 
 load_dotenv()
 
@@ -58,6 +61,92 @@ def init_google_drive():
         import traceback
         traceback.print_exc()
         return False
+
+
+def is_url(text):
+    """檢查文字是否包含 URL"""
+    # 簡單的 URL 正則表達式
+    url_pattern = re.compile(
+        r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+'
+    )
+    return url_pattern.search(text)
+
+
+def extract_url(text):
+    """從文字中提取 URL"""
+    url_pattern = re.compile(
+        r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+'
+    )
+    match = url_pattern.search(text)
+    return match.group(0) if match else None
+
+
+def scrape_web_content(url):
+    """爬取網頁內容"""
+    try:
+        # 設定 User-Agent 避免被擋
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+
+        # 發送請求
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+
+        # 使用 BeautifulSoup 解析 HTML
+        soup = BeautifulSoup(response.content, 'lxml')
+
+        # 移除 script 和 style 標籤
+        for script in soup(["script", "style"]):
+            script.decompose()
+
+        # 取得標題
+        title = soup.title.string if soup.title else "無標題"
+
+        # 取得主要內容（嘗試多種方式）
+        # 1. 嘗試取得 article 標籤
+        content = ""
+        article = soup.find('article')
+        if article:
+            content = article.get_text(separator='\n', strip=True)
+        else:
+            # 2. 嘗試取得 main 標籤
+            main = soup.find('main')
+            if main:
+                content = main.get_text(separator='\n', strip=True)
+            else:
+                # 3. 取得 body 的文字（去除過多空白）
+                content = soup.get_text(separator='\n', strip=True)
+
+        # 清理內容：移除多餘的空行
+        lines = [line.strip() for line in content.split('\n') if line.strip()]
+        content = '\n'.join(lines)
+
+        # 限制內容長度（避免太長）
+        max_length = 3000
+        if len(content) > max_length:
+            content = content[:max_length] + "..."
+
+        return {
+            'title': title,
+            'content': content,
+            'url': url
+        }
+
+    except requests.exceptions.RequestException as e:
+        app.logger.error(f"爬取網頁失敗: {e}")
+        return {
+            'title': "爬取失敗",
+            'content': f"無法爬取網頁內容：{str(e)}",
+            'url': url
+        }
+    except Exception as e:
+        app.logger.error(f"處理網頁內容時發生錯誤: {e}")
+        return {
+            'title': "處理失敗",
+            'content': f"處理網頁內容時發生錯誤：{str(e)}",
+            'url': url
+        }
 
 
 def generate_summary(text):
@@ -157,72 +246,143 @@ def handle_message(event):
         # 取得文字訊息內容
         text_content = event.message.text
 
-        # 檢查是否為文字筆記指令（/a 開頭）
-        if text_content.startswith('/a '):
-            # 提取 /a 後面的文字
-            actual_content = text_content[3:].strip()
-            category = "文字筆記"
-        else:
-            # 一般訊息（語音輸入）
-            actual_content = text_content
-            category = "語音筆記"
+        # 檢查是否包含 URL
+        if is_url(text_content):
+            # 提取 URL
+            url = extract_url(text_content)
 
-        # 使用 OpenAI 生成摘要
-        summary = generate_summary(actual_content)
+            # 爬取網頁內容
+            web_data = scrape_web_content(url)
 
-        # 儲存到 Notion
-        from datetime import datetime
+            # 使用 OpenAI 生成摘要（針對網頁內容）
+            summary = generate_summary(web_data['content'])
 
-        notion.pages.create(
-            parent={"database_id": os.getenv('NOTION_DATABASE_ID')},
-            properties={
-                "Name": {
-                    "title": [
-                        {
-                            "text": {
-                                "content": actual_content[:100]  # 使用前100字作為標題
+            # 儲存到 Notion
+            from datetime import datetime
+
+            notion.pages.create(
+                parent={"database_id": os.getenv('NOTION_DATABASE_ID')},
+                properties={
+                    "Name": {
+                        "title": [
+                            {
+                                "text": {
+                                    "content": web_data['title'][:100]  # 使用網頁標題
+                                }
                             }
-                        }
-                    ]
-                },
-                "內容": {
-                    "rich_text": [
-                        {
-                            "text": {
-                                "content": actual_content
+                        ]
+                    },
+                    "內容": {
+                        "rich_text": [
+                            {
+                                "text": {
+                                    "content": web_data['content'][:2000]  # Notion 限制
+                                }
                             }
-                        }
-                    ]
-                },
-                "摘要": {
-                    "rich_text": [
-                        {
-                            "text": {
-                                "content": summary  # AI 生成的摘要
+                        ]
+                    },
+                    "摘要": {
+                        "rich_text": [
+                            {
+                                "text": {
+                                    "content": summary  # AI 生成的摘要
+                                }
                             }
+                        ]
+                    },
+                    "創建時間": {
+                        "date": {
+                            "start": datetime.now().isoformat()
                         }
-                    ]
-                },
-                "創建時間": {
-                    "date": {
-                        "start": datetime.now().isoformat()
-                    }
-                },
-                "類別": {
-                    "select": {
-                        "name": category
+                    },
+                    "類別": {
+                        "select": {
+                            "name": "網頁筆記"
+                        }
+                    },
+                    "URL": {
+                        "url": url
                     }
                 }
-            }
-        )
-
-        # 回傳確認訊息
-        line_bot_api.reply_message_with_http_info(
-            ReplyMessageRequest(
-                reply_token=event.reply_token,
-                messages=[TextMessage(text=f"已存入 Notion ({category})：{actual_content[:50]}...")]
             )
-        )
+
+            # 回傳確認訊息
+            reply_text = f"已存入 Notion (網頁筆記)\n\n標題: {web_data['title']}\n摘要: {summary}"
+            line_bot_api.reply_message_with_http_info(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text=reply_text[:500])]  # LINE 訊息長度限制
+                )
+            )
+
+        else:
+            # 原有的文字筆記處理邏輯
+            # 檢查是否為文字筆記指令（/a 開頭）
+            if text_content.startswith('/a '):
+                # 提取 /a 後面的文字
+                actual_content = text_content[3:].strip()
+                category = "文字筆記"
+            else:
+                # 一般訊息（語音輸入）
+                actual_content = text_content
+                category = "語音筆記"
+
+            # 使用 OpenAI 生成摘要
+            summary = generate_summary(actual_content)
+
+            # 儲存到 Notion
+            from datetime import datetime
+
+            notion.pages.create(
+                parent={"database_id": os.getenv('NOTION_DATABASE_ID')},
+                properties={
+                    "Name": {
+                        "title": [
+                            {
+                                "text": {
+                                    "content": actual_content[:100]  # 使用前100字作為標題
+                                }
+                            }
+                        ]
+                    },
+                    "內容": {
+                        "rich_text": [
+                            {
+                                "text": {
+                                    "content": actual_content
+                                }
+                            }
+                        ]
+                    },
+                    "摘要": {
+                        "rich_text": [
+                            {
+                                "text": {
+                                    "content": summary  # AI 生成的摘要
+                                }
+                            }
+                        ]
+                    },
+                    "創建時間": {
+                        "date": {
+                            "start": datetime.now().isoformat()
+                        }
+                    },
+                    "類別": {
+                        "select": {
+                            "name": category
+                        }
+                    }
+                }
+            )
+
+            # 回傳確認訊息
+            line_bot_api.reply_message_with_http_info(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text=f"已存入 Notion ({category})：{actual_content[:50]}...")]
+                )
+            )
 
 
 @handler.add(MessageEvent, message=AudioMessageContent)

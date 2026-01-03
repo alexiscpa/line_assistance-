@@ -4,8 +4,10 @@
 # Virtual environment
 venv/
 .venv/
+.venv_win/
 env/
 ENV/
+test_env/
 
 # Python
 __pycache__/
@@ -36,3 +38,25 @@ Thumbs.db
 # Google Drive tokens
 token.json
 credentials.json
+
+# Test files
+test_*.py
+*_test.py
+check_*.py
+
+# Backup files
+*_backup.py
+*_original.py
+app_backup.py
+app_original.py
+
+# Claude AI
+.claude/
+
+# Dependencies
+uv.lock
+get-pip.py
+
+# Other
+complete_auth.py
+google_auth_manual.py
