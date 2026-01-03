@@ -13,6 +13,7 @@ import os
 import tempfile
 from dotenv import load_dotenv
 from openai import OpenAI
+from notion_client import Client
 
 load_dotenv()
 
@@ -21,6 +22,25 @@ app = Flask(__name__)
 configuration = Configuration(access_token=os.getenv('LINE_CHANNEL_ACCESS_TOKEN'))
 handler = WebhookHandler(os.getenv('LINE_CHANNEL_SECRET'))
 openai_client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+notion = Client(auth=os.getenv('NOTION_API_KEY'))
+
+
+def generate_summary(text):
+    """使用 OpenAI GPT 生成摘要"""
+    try:
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "你是一個專業的摘要助手。請用繁體中文生成簡潔的摘要，最多50字。"},
+                {"role": "user", "content": f"請為以下內容生成摘要：\n\n{text}"}
+            ],
+            max_tokens=100,
+            temperature=0.7
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        # 如果 API 呼叫失敗，回傳前50字作為備用
+        return text[:50]
 
 
 @app.route("/", methods=['GET'])
@@ -47,10 +67,64 @@ def webhook():
 def handle_message(event):
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
+
+        # 取得文字訊息內容
+        text_content = event.message.text
+
+        # 使用 OpenAI 生成摘要
+        summary = generate_summary(text_content)
+
+        # 儲存到 Notion
+        from datetime import datetime
+
+        notion.pages.create(
+            parent={"database_id": os.getenv('NOTION_DATABASE_ID')},
+            properties={
+                "Name": {
+                    "title": [
+                        {
+                            "text": {
+                                "content": text_content[:100]  # 使用前100字作為標題
+                            }
+                        }
+                    ]
+                },
+                "內容": {
+                    "rich_text": [
+                        {
+                            "text": {
+                                "content": text_content
+                            }
+                        }
+                    ]
+                },
+                "摘要": {
+                    "rich_text": [
+                        {
+                            "text": {
+                                "content": summary  # AI 生成的摘要
+                            }
+                        }
+                    ]
+                },
+                "創建時間": {
+                    "date": {
+                        "start": datetime.now().isoformat()
+                    }
+                },
+                "類別": {
+                    "select": {
+                        "name": "語音筆記"
+                    }
+                }
+            }
+        )
+
+        # 回傳確認訊息
         line_bot_api.reply_message_with_http_info(
             ReplyMessageRequest(
                 reply_token=event.reply_token,
-                messages=[TextMessage(text=event.message.text)]
+                messages=[TextMessage(text=f"已存入 Notion：{text_content}")]
             )
         )
 
@@ -79,6 +153,55 @@ def handle_audio_message(event):
                     file=audio_file,
                     language="zh"
                 )
+
+            # 使用 OpenAI 生成摘要
+            summary = generate_summary(transcript.text)
+
+            # 儲存到 Notion
+            from datetime import datetime
+
+            notion.pages.create(
+                parent={"database_id": os.getenv('NOTION_DATABASE_ID')},
+                properties={
+                    "Name": {
+                        "title": [
+                            {
+                                "text": {
+                                    "content": transcript.text[:100]  # 使用前100字作為標題
+                                }
+                            }
+                        ]
+                    },
+                    "內容": {
+                        "rich_text": [
+                            {
+                                "text": {
+                                    "content": transcript.text
+                                }
+                            }
+                        ]
+                    },
+                    "摘要": {
+                        "rich_text": [
+                            {
+                                "text": {
+                                    "content": summary  # AI 生成的摘要
+                                }
+                            }
+                        ]
+                    },
+                    "創建時間": {
+                        "date": {
+                            "start": datetime.now().isoformat()
+                        }
+                    },
+                    "類別": {
+                        "select": {
+                            "name": "語音筆記"
+                        }
+                    }
+                }
+            )
 
             # 回傳文字訊息
             line_bot_api.reply_message_with_http_info(
