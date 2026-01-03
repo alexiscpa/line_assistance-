@@ -5,15 +5,18 @@ from linebot.v3.messaging import (
     Configuration,
     ApiClient,
     MessagingApi,
+    MessagingApiBlob,
     ReplyMessageRequest,
     TextMessage
 )
-from linebot.v3.webhooks import MessageEvent, TextMessageContent, AudioMessageContent
+from linebot.v3.webhooks import MessageEvent, TextMessageContent, AudioMessageContent, ImageMessageContent
 import os
 import tempfile
 from dotenv import load_dotenv
 from openai import OpenAI
 from notion_client import Client
+from google_drive_service import get_google_drive_service, create_folder_if_not_exists, upload_image_to_drive
+import base64
 
 load_dotenv()
 
@@ -23,6 +26,38 @@ configuration = Configuration(access_token=os.getenv('LINE_CHANNEL_ACCESS_TOKEN'
 handler = WebhookHandler(os.getenv('LINE_CHANNEL_SECRET'))
 openai_client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 notion = Client(auth=os.getenv('NOTION_API_KEY'))
+
+# Google Drive 會在首次需要時才初始化（延遲載入）
+drive_service = None
+drive_folder_id = None
+
+def init_google_drive():
+    """延遲初始化 Google Drive"""
+    global drive_service, drive_folder_id
+    if drive_service is not None:
+        return True
+
+    try:
+        print("正在初始化 Google Drive...")
+        drive_service = get_google_drive_service()
+
+        # 優先使用指定的資料夾 ID
+        folder_id = os.getenv('GOOGLE_DRIVE_FOLDER_ID')
+        if folder_id:
+            drive_folder_id = folder_id
+            print(f"使用指定的 Google Drive 資料夾 ID: {folder_id}")
+        else:
+            drive_folder_id = create_folder_if_not_exists(
+                drive_service,
+                os.getenv('GOOGLE_DRIVE_FOLDER_NAME', 'LINE靈感助手')
+            )
+        print("Google Drive 初始化成功！")
+        return True
+    except Exception as e:
+        print(f"Google Drive 初始化失敗: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 
 def generate_summary(text):
@@ -41,6 +76,57 @@ def generate_summary(text):
     except Exception as e:
         # 如果 API 呼叫失敗，回傳前50字作為備用
         return text[:50]
+
+
+def analyze_image_with_gpt(image_path):
+    """使用 GPT-4 Vision 分析圖片內容"""
+    try:
+        # 讀取圖片並轉為 base64
+        with open(image_path, 'rb') as image_file:
+            image_data = base64.b64encode(image_file.read()).decode('utf-8')
+
+        # 判斷圖片格式
+        import imghdr
+        image_type = imghdr.what(image_path)
+        mime_type = f"image/{image_type}" if image_type else "image/jpeg"
+
+        # 呼叫 GPT-4 Vision API
+        response = openai_client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "你是一個專業的圖片分析助手。請用繁體中文詳細描述圖片內容，包括主要元素、場景、文字內容（如有）等，約100-200字。"
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "請詳細描述這張圖片的內容："
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{mime_type};base64,{image_data}"
+                            }
+                        }
+                    ]
+                }
+            ],
+            max_tokens=500
+        )
+
+        description = response.choices[0].message.content.strip()
+
+        # 生成簡短摘要
+        summary = generate_summary(description)
+
+        return description, summary
+
+    except Exception as e:
+        app.logger.error(f"圖片分析失敗: {e}")
+        return "圖片內容（分析失敗）", "圖片"
 
 
 @app.route("/", methods=['GET'])
@@ -143,12 +229,13 @@ def handle_message(event):
 def handle_audio_message(event):
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
+        line_bot_blob_api = MessagingApiBlob(api_client)
 
         # 取得語音訊息 ID
         message_id = event.message.id
 
         # 下載語音檔案
-        message_content = line_bot_api.get_message_content(message_id)
+        message_content = line_bot_blob_api.get_message_content(message_id)
 
         # 儲存到臨時檔案
         with tempfile.NamedTemporaryFile(delete=False, suffix='.m4a') as temp_audio:
@@ -225,6 +312,124 @@ def handle_audio_message(event):
             os.unlink(temp_audio_path)
 
 
+@handler.add(MessageEvent, message=ImageMessageContent)
+def handle_image_message(event):
+    """處理圖片訊息"""
+    with ApiClient(configuration) as api_client:
+        line_bot_api = MessagingApi(api_client)
+        line_bot_blob_api = MessagingApiBlob(api_client)
+
+        # 初始化 Google Drive（首次使用時）
+        if not init_google_drive():
+            line_bot_api.reply_message_with_http_info(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text="Google Drive 服務暫時無法使用，請稍後再試。")]
+                )
+            )
+            return
+
+        # 取得圖片訊息 ID
+        message_id = event.message.id
+
+        try:
+            # 下載圖片
+            message_content = line_bot_blob_api.get_message_content(message_id)
+
+            # 儲存到臨時檔案
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as temp_image:
+                temp_image.write(message_content)
+                temp_image_path = temp_image.name
+
+            # 1. 上傳到 Google Drive
+            drive_link = upload_image_to_drive(
+                drive_service,
+                temp_image_path,
+                drive_folder_id
+            )
+
+            # 2. 使用 GPT Vision 分析圖片
+            description, summary = analyze_image_with_gpt(temp_image_path)
+
+            # 3. 儲存到 Notion
+            from datetime import datetime
+
+            notion.pages.create(
+                parent={"database_id": os.getenv('NOTION_DATABASE_ID')},
+                properties={
+                    "Name": {
+                        "title": [
+                            {
+                                "text": {
+                                    "content": description[:100]  # 前100字作為標題
+                                }
+                            }
+                        ]
+                    },
+                    "內容": {
+                        "rich_text": [
+                            {
+                                "text": {
+                                    "content": description[:2000]  # Notion 限制
+                                }
+                            }
+                        ]
+                    },
+                    "摘要": {
+                        "rich_text": [
+                            {
+                                "text": {
+                                    "content": summary
+                                }
+                            }
+                        ]
+                    },
+                    "創建時間": {
+                        "date": {
+                            "start": datetime.now().isoformat()
+                        }
+                    },
+                    "類別": {
+                        "select": {
+                            "name": "圖片筆記"
+                        }
+                    },
+                    "URL": {
+                        "url": drive_link
+                    }
+                }
+            )
+
+            # 4. 回傳確認訊息
+            reply_text = f"已存入 Notion (圖片筆記)\n\n{summary}\n\nGoogle Drive: {drive_link}"
+            line_bot_api.reply_message_with_http_info(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text=reply_text[:500])]  # LINE 訊息長度限制
+                )
+            )
+
+        except Exception as e:
+            app.logger.error(f"處理圖片訊息時發生錯誤: {e}")
+            import traceback
+            traceback.print_exc()
+
+            line_bot_api.reply_message_with_http_info(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text=f"處理圖片時發生錯誤：{str(e)[:100]}")]
+                )
+            )
+        finally:
+            # 清理臨時檔案
+            if 'temp_image_path' in locals():
+                try:
+                    os.unlink(temp_image_path)
+                except:
+                    pass
+
+
 if __name__ == "__main__":
     port = int(os.getenv('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    # 關閉 debug 模式以避免 WSL 檔案系統問題
+    app.run(host='0.0.0.0', port=port, debug=False)
