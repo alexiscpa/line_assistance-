@@ -71,8 +71,18 @@ def handle_message(event):
         # 取得文字訊息內容
         text_content = event.message.text
 
+        # 檢查是否為文字筆記指令（/a 開頭）
+        if text_content.startswith('/a '):
+            # 提取 /a 後面的文字
+            actual_content = text_content[3:].strip()
+            category = "文字筆記"
+        else:
+            # 一般訊息（語音輸入）
+            actual_content = text_content
+            category = "語音筆記"
+
         # 使用 OpenAI 生成摘要
-        summary = generate_summary(text_content)
+        summary = generate_summary(actual_content)
 
         # 儲存到 Notion
         from datetime import datetime
@@ -84,7 +94,7 @@ def handle_message(event):
                     "title": [
                         {
                             "text": {
-                                "content": text_content[:100]  # 使用前100字作為標題
+                                "content": actual_content[:100]  # 使用前100字作為標題
                             }
                         }
                     ]
@@ -93,7 +103,7 @@ def handle_message(event):
                     "rich_text": [
                         {
                             "text": {
-                                "content": text_content
+                                "content": actual_content
                             }
                         }
                     ]
@@ -114,7 +124,7 @@ def handle_message(event):
                 },
                 "類別": {
                     "select": {
-                        "name": "語音筆記"
+                        "name": category
                     }
                 }
             }
@@ -124,7 +134,7 @@ def handle_message(event):
         line_bot_api.reply_message_with_http_info(
             ReplyMessageRequest(
                 reply_token=event.reply_token,
-                messages=[TextMessage(text=f"已存入 Notion：{text_content}")]
+                messages=[TextMessage(text=f"已存入 Notion ({category})：{actual_content[:50]}...")]
             )
         )
 
