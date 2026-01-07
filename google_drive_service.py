@@ -25,7 +25,7 @@ def get_google_drive_service():
     取得 Google Drive 服務實例
 
     處理 OAuth 2.0 認證流程：
-    1. 檢查 token.json 是否存在
+    1. 檢查 token.json 是否存在或从环境变量读取
     2. 驗證 token 有效性
     3. 自動刷新過期的 token
     4. 建立並返回 Drive 服務實例
@@ -40,10 +40,37 @@ def get_google_drive_service():
     token_file = os.getenv('GOOGLE_TOKEN_FILE', 'token.json')
     credentials_file = os.getenv('GOOGLE_CREDENTIALS_FILE', 'credentials.json')
 
+    # 优先从环境变量读取 token（用于云部署）
+    token_base64 = os.getenv('GOOGLE_DRIVE_TOKEN_BASE64')
+
+    # 使用 logger 输出调试信息
+    logger.info(f"[DEBUG] Checking env var GOOGLE_DRIVE_TOKEN_BASE64")
+    logger.info(f"[DEBUG] Token exists: {token_base64 is not None}")
+
+    if token_base64:
+        logger.info(f"[DEBUG] Token length: {len(token_base64)}")
+        try:
+            import base64
+            logger.info("[DEBUG] Decoding base64...")
+            token_data = base64.b64decode(token_base64)
+            logger.info(f"[DEBUG] Decoded length: {len(token_data)}")
+            logger.info("[DEBUG] Loading pickle...")
+            creds = pickle.loads(token_data)
+            logger.info("[DEBUG] Pickle loaded successfully!")
+            logger.info("从环境变量加载 Google Drive token")
+        except Exception as e:
+            logger.error(f"[DEBUG] Error: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            logger.error(f"从环境变量加载 token 失败: {e}")
+    else:
+        logger.info("[DEBUG] GOOGLE_DRIVE_TOKEN_BASE64 not found in env")
+
     # 檢查 token.json 是否存在
-    if os.path.exists(token_file):
+    if not creds and os.path.exists(token_file):
         with open(token_file, 'rb') as token:
             creds = pickle.load(token)
+            logger.info("从文件加载 Google Drive token")
 
     # 如果沒有有效的憑證，需要進行授權
     if not creds or not creds.valid:
