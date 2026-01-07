@@ -5,6 +5,7 @@ Google Drive 服務模組
 
 import os
 import pickle
+import logging
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -14,6 +15,9 @@ from googleapiclient.errors import HttpError
 
 # Google Drive API 權限範圍（僅限存取本應用建立的檔案）
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
+
+# 設定日誌
+logger = logging.getLogger(__name__)
 
 
 def get_google_drive_service():
@@ -46,25 +50,33 @@ def get_google_drive_service():
         if creds and creds.expired and creds.refresh_token:
             # Token 過期但可以刷新
             try:
+                logger.info("Token 已過期，正在刷新...")
                 creds.refresh(Request())
-                print("Token 已自動刷新")
+                logger.info("Token 已自動刷新")
+
+                # 儲存刷新後的憑證
+                with open(token_file, 'wb') as token:
+                    pickle.dump(creds, token)
+                logger.info("已儲存新的 token")
             except Exception as e:
-                print(f"Token 刷新失敗: {e}")
-                print("請執行 google_auth_setup.py 重新授權")
-                raise
+                logger.error(f"Token 刷新失敗: {e}")
+                logger.error("請執行 google_auth_setup.py 重新授權")
+                raise Exception(f"Token 刷新失敗: {str(e)}。請執行 google_auth_setup.py 重新授權。")
         else:
             # 沒有 token 或無法刷新，需要重新授權
+            logger.error("找不到有效的授權 token")
             raise Exception(
                 "找不到有效的授權 token。請先執行 google_auth_setup.py 進行授權。"
             )
 
-        # 儲存刷新後的憑證
-        with open(token_file, 'wb') as token:
-            pickle.dump(creds, token)
-
     # 建立 Drive API 服務
-    service = build('drive', 'v3', credentials=creds)
-    return service
+    try:
+        service = build('drive', 'v3', credentials=creds)
+        logger.info("Google Drive API 服務建立成功")
+        return service
+    except Exception as e:
+        logger.error(f"建立 Google Drive API 服務失敗: {e}")
+        raise
 
 
 def create_folder_if_not_exists(service, folder_name):
@@ -95,7 +107,7 @@ def create_folder_if_not_exists(service, folder_name):
         if items:
             # 資料夾已存在
             folder_id = items[0]['id']
-            print(f"找到現有資料夾: {folder_name} (ID: {folder_id})")
+            logger.info(f"找到現有資料夾: {folder_name} (ID: {folder_id})")
             return folder_id
         else:
             # 建立新資料夾
@@ -109,11 +121,11 @@ def create_folder_if_not_exists(service, folder_name):
             ).execute()
 
             folder_id = folder.get('id')
-            print(f"已建立新資料夾: {folder_name} (ID: {folder_id})")
+            logger.info(f"已建立新資料夾: {folder_name} (ID: {folder_id})")
             return folder_id
 
     except HttpError as error:
-        print(f"建立資料夾時發生錯誤: {error}")
+        logger.error(f"建立資料夾時發生錯誤: {error}")
         raise
 
 
@@ -166,7 +178,7 @@ def upload_image_to_drive(service, image_path, folder_id):
         ).execute()
 
         file_id = file.get('id')
-        print(f"檔案已上傳: {file.get('name')} (ID: {file_id})")
+        logger.info(f"檔案已上傳: {file.get('name')} (ID: {file_id})")
 
         # 設定檔案權限為「任何人都能檢視」
         permission = {
@@ -178,17 +190,17 @@ def upload_image_to_drive(service, image_path, folder_id):
             body=permission
         ).execute()
 
-        print(f"已設定檔案權限為公開檢視")
+        logger.info(f"已設定檔案權限為公開檢視")
 
         # 返回分享連結
         share_link = file.get('webViewLink')
         return share_link
 
     except HttpError as error:
-        print(f"上傳圖片時發生錯誤: {error}")
+        logger.error(f"上傳圖片時發生錯誤: {error}")
         raise
     except Exception as error:
-        print(f"處理圖片時發生錯誤: {error}")
+        logger.error(f"處理圖片時發生錯誤: {error}")
         raise
 
 

@@ -56,25 +56,27 @@ def init_google_drive():
         return True
 
     try:
-        print("正在初始化 Google Drive...")
+        app.logger.info("正在初始化 Google Drive...")
         drive_service = get_google_drive_service()
 
         # 優先使用指定的資料夾 ID
         folder_id = os.getenv('GOOGLE_DRIVE_FOLDER_ID')
         if folder_id:
             drive_folder_id = folder_id
-            print(f"使用指定的 Google Drive 資料夾 ID: {folder_id}")
+            app.logger.info(f"使用指定的 Google Drive 資料夾 ID: {folder_id}")
         else:
             drive_folder_id = create_folder_if_not_exists(
                 drive_service,
                 os.getenv('GOOGLE_DRIVE_FOLDER_NAME', 'LINE靈感助手')
             )
-        print("Google Drive 初始化成功！")
+        app.logger.info("Google Drive 初始化成功！")
         return True
     except Exception as e:
-        print(f"Google Drive 初始化失敗: {e}")
+        app.logger.error(f"Google Drive 初始化失敗: {e}")
         import traceback
-        traceback.print_exc()
+        app.logger.error(traceback.format_exc())
+        # 重置 drive_service 以便下次可以重試
+        drive_service = None
         return False
 
 
