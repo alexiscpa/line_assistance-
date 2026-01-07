@@ -179,10 +179,11 @@ def upload_image_to_drive(service, image_path, folder_id):
         # 取得檔案名稱
         file_name = os.path.basename(image_path)
 
-        # 判斷 MIME 類型
-        import imghdr
-        image_type = imghdr.what(image_path)
-        mime_type = f"image/{image_type}" if image_type else "image/jpeg"
+        # 判斷 MIME 類型（使用 mimetypes 取代已移除的 imghdr）
+        import mimetypes
+        mime_type, _ = mimetypes.guess_type(image_path)
+        if not mime_type or not mime_type.startswith('image/'):
+            mime_type = "image/jpeg"  # 預設為 JPEG
 
         # 準備檔案 metadata
         file_metadata = {

@@ -85,10 +85,11 @@ def analyze_image_with_gpt(image_path):
         with open(image_path, 'rb') as image_file:
             image_data = base64.b64encode(image_file.read()).decode('utf-8')
 
-        # 判斷圖片格式
-        import imghdr
-        image_type = imghdr.what(image_path)
-        mime_type = f"image/{image_type}" if image_type else "image/jpeg"
+        # 判斷圖片格式（使用 mimetypes 取代已移除的 imghdr）
+        import mimetypes
+        mime_type, _ = mimetypes.guess_type(image_path)
+        if not mime_type or not mime_type.startswith('image/'):
+            mime_type = "image/jpeg"  # 預設為 JPEG
 
         # 呼叫 GPT-4 Vision API
         response = openai_client.chat.completions.create(
